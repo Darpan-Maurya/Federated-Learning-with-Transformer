@@ -78,7 +78,7 @@ class Transformer(nn.Module):
         return output
     
     def train_model(self, data_loader, epochs=10, print_every=1, return_evo=False):
-        optim = torch.optim.Adam(self.parameters(), lr=0.00005, betas=(0.9, 0.98))
+        optim = torch.optim.Adam(self.parameters(), lr=0.00001, betas=(0.9, 0.98))
         self.train()    
         total_loss = 0
         loss_evo = []

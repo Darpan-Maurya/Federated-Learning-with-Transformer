@@ -1,5 +1,3 @@
-# task.py
-
 import torch
 import numpy as np
 import pandas as pd
@@ -10,43 +8,40 @@ from utils.transformer import Transformer
 WINDOW = 50
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def load_combined_data():
-    # Normal data
-    normal_df = pd.read_pickle("data/WUSTL-IIoT/train_WUSTL-IIoT.pkl")
-    normal_features = normal_df.select_dtypes(include=["number"])
-    normal_targets = np.zeros(len(normal_features))  # 0 = Normal
+def load_single_data(dataset="dos"):
+    """
+    Load one dataset at a time (normal, comm, dos, recon).
+    Uses the last column as the target (0 = Normal, 1 = Attack).
+    Ensures features are numeric only.
+    """
+    dataset_map = {
+        "normal": "data/WUSTL-IIoT/train_WUSTL-IIoT.pkl",
+        "comm":   "data/WUSTL-IIoT/comm_WUSTL-IIoT.pkl",
+        "dos":    "data/WUSTL-IIoT/dos_WUSTL-IIoT.pkl",
+        "recon":  "data/WUSTL-IIoT/recon_WUSTL-IIoT.pkl",
+    }
 
-    # Attack data (comm, dos, recon)
-    attack_files = [
-        "data/WUSTL-IIoT/comm_WUSTL-IIoT.pkl",
-        "data/WUSTL-IIoT/dos_WUSTL-IIoT.pkl",
-        "data/WUSTL-IIoT/recon_WUSTL-IIoT.pkl"
-    ]
+    if dataset not in dataset_map:
+        raise ValueError(f"Invalid dataset: {dataset}. Choose from {list(dataset_map.keys())}")
 
-    attack_dfs = [pd.read_pickle(f) for f in attack_files]
-    combined_attack_df = pd.concat(attack_dfs, ignore_index=True)
+    df = pd.read_pickle(dataset_map[dataset]).copy()
 
-    # Take only numeric columns
-    attack_features = combined_attack_df.select_dtypes(include=["number"]).copy()
+    # ---- Target = last column ----
+    targets = df.iloc[:, -1].astype(int).values
 
-    # Drop label columns ONLY if they actually exist
-    for col in ["label", "target"]:
-        if col in attack_features.columns:
-            attack_features = attack_features.drop(columns=[col], errors="ignore")
+    # ---- Features = all but last column, numeric only ----
+    features = df.iloc[:, :-1].select_dtypes(include=["number"]).astype(np.float32).values
 
-    attack_targets = np.ones(len(attack_features))  # 1 = Attack
+    print(f"Loaded dataset={dataset}, samples={len(features)}")
+    print(f"Targets distribution: Normal={np.sum(targets==0)}, Attack={np.sum(targets==1)}")
+    print(f"Features shape: {features.shape}, Targets shape: {targets.shape}")
 
-    # Combine normal + attack
-    all_features = pd.concat([normal_features, attack_features], ignore_index=True)
-    all_targets = np.concatenate([normal_targets, attack_targets])
-
-    print(f"Final check -> Normal={np.sum(all_targets==0)}, Attack={np.sum(all_targets==1)}")
-    print(f"Feature shape: {all_features.shape}, Target shape: {all_targets.shape}")
-
-    return all_features, all_targets
+    return features, targets
 
 
-def sliding_window(data, targets, window=WINDOW, max_sequences=50000):
+
+
+def sliding_window(data, targets, window=WINDOW, max_sequences=300000):
     """Create sliding windows with memory limits"""
     print(f"Creating sliding windows (max {max_sequences} sequences)...")
     
@@ -80,45 +75,55 @@ def sliding_window(data, targets, window=WINDOW, max_sequences=50000):
     print(f"Memory usage: {X_seq.element_size() * X_seq.nelement() / 1024**3:.2f} GB")
     return X_seq, y_seq
 
-def load_data():
-    """Load combined normal and attack data"""
-    X, y = load_combined_data()
+def load_data(dataset="dos"):
+    """Load one dataset (normal, comm, dos, recon)"""
+    X, y = load_single_data(dataset=dataset)
     if X is None:
         return None, None
-    
-    # Create sequences with targets
+
+    # Create sequences
     X_seq, y_seq = sliding_window(X, y, window=WINDOW)
-    
-    # Create dataset
+
+    # Create dataset + split
     dataset = TensorDataset(X_seq, y_seq)
     train_len = int(0.8 * len(dataset))
     val_len = len(dataset) - train_len
-    
-    print(f"Final dataset split: Train={train_len}, Val={val_len}")
+
+    print(f"Final dataset split for {dataset}: Train={train_len}, Val={val_len}")
     return random_split(dataset, [train_len, val_len])
 
-def partition_data(client_id, num_clients, val_split=0.2):
-    """Partition combined data for federated learning"""
-    X, y = load_combined_data()
+
+def partition_data(client_id, num_clients, dataset="dos", val_split=0.2, shuffle=True):
+    """
+    Partition one dataset for federated learning into multiple clients.
+    Each client gets a different slice of the dataset.
+    """
+    # Load dataset (normal/comm/dos/recon)
+    X, y = load_single_data(dataset=dataset)
     if X is None:
         return None, None
-    
-    # Partition data
+
     total_len = len(X)
+    indices = np.arange(total_len)
+
+    # Shuffle before splitting to avoid label imbalance
+    if shuffle:
+        np.random.shuffle(indices)
+
     part_len = total_len // num_clients
     start = client_id * part_len
-    end = start + part_len if client_id < num_clients - 1 else total_len
-    
-    # Get partitioned features and targets
-    X_part = X[start:end]
-    y_part = y[start:end]
-    
-    print(f"Client {client_id}: {len(X_part)} samples, Normal={np.sum(y_part==0)}, Attack={np.sum(y_part==1)}")
-    
-    # Create sequences
+    end = (client_id + 1) * part_len if client_id < num_clients - 1 else total_len
+
+    client_idx = indices[start:end]
+    X_part, y_part = X[client_idx], y[client_idx]
+
+    print(f"Client {client_id}: {len(X_part)} samples, "
+          f"Normal={np.sum(y_part==0)}, Attack={np.sum(y_part==1)}")
+
+    # Create sliding windows
     X_seq, y_seq = sliding_window(X_part, y_part, window=WINDOW)
-    
-    # Create dataset
+
+    # Create dataset + train/val split
     dataset = TensorDataset(X_seq, y_seq)
     train_len = int((1 - val_split) * len(dataset))
     val_len = len(dataset) - train_len

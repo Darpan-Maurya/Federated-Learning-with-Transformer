@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: wustl-transformer-flower
+Version: 0.1.0
+Summary: Federated learning with Transformer on WUSTL-IIoT dataset
+Author-email: Rakesh Mourya <your@email.com>
+License-File: LICENSE
+Requires-Dist: flwr>=1.5.0
+Requires-Dist: torch
+Requires-Dist: numpy
+Requires-Dist: tqdm
+Requires-Dist: scikit-learn
+Dynamic: license-file
